@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>数仓分区回填计划</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #1a2233; --border: #2b3a55; --text: #dbe4f5;
+    --muted: #8fa1bf; --accent: #4f8cff;
+    --ok: #2ea86f; --missing: #7c8798; --failed: #d9534f; --stale: #e0a13c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  header { padding: 14px 24px; border-bottom: 1px solid var(--border);
+           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  nav { display: flex; gap: 4px; padding: 10px 24px 0; }
+  nav button { background: none; border: none; color: var(--muted);
+               padding: 8px 14px; cursor: pointer; font-size: 14px;
+               border-bottom: 2px solid transparent; }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  main { padding: 20px 24px 60px; max-width: 1200px; }
+  .tab { display: none; } .tab.active { display: block; }
+  .panel { background: var(--panel); border: 1px solid var(--border);
+           border-radius: 8px; padding: 16px; margin-bottom: 18px; }
+  .panel h2 { margin: 0 0 12px; font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px;
+           border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: normal; }
+  input, select, button { font: inherit; }
+  input, select { background: #121a2b; color: var(--text);
+                  border: 1px solid var(--border); border-radius: 6px;
+                  padding: 6px 10px; }
+  button { background: var(--accent); color: #fff; border: none;
+           border-radius: 6px; padding: 7px 16px; cursor: pointer; }
+  button.ghost { background: none; border: 1px solid var(--border);
+                 color: var(--muted); padding: 4px 10px; }
+  button.ghost:hover { color: var(--text); }
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px;
+         font-size: 12px; color: #fff; }
+  .tag.ok { background: var(--ok); } .tag.missing { background: var(--missing); }
+  .tag.failed { background: var(--failed); } .tag.stale { background: var(--stale); }
+  .tag.ver { background: #33415e; }
+  .msg { padding: 10px 14px; border-radius: 6px; margin: 10px 0; display: none; }
+  .msg.err { display: block; background: #3a1d1f; border: 1px solid var(--failed); }
+  .msg.okm { display: block; background: #16301f; border: 1px solid var(--ok); }
+  .wave { margin: 14px 0; }
+  .wave h3 { font-size: 13px; color: var(--accent); margin: 0 0 6px; }
+  .chip { display: inline-block; background: #121a2b; border: 1px solid var(--border);
+          border-left-width: 4px; border-radius: 6px; padding: 5px 10px;
+          margin: 3px 6px 3px 0; font-size: 12.5px; }
+  .chip.ok { border-left-color: var(--ok); }
+  .chip.missing { border-left-color: var(--missing); }
+  .chip.failed { border-left-color: var(--failed); }
+  .chip.stale { border-left-color: var(--stale); }
+  .chip .st { color: var(--muted); margin-left: 6px; }
+  .chip .deps { display: block; color: var(--muted); font-size: 11px; }
+  .plan-row { cursor: pointer; } .plan-row:hover td { background: #212c44; }
+  code { background: #121a2b; padding: 1px 6px; border-radius: 4px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>数仓分区回填计划</h1>
+  <span class="sub">录入依赖与运行记录 → 选择目标任务与业务日期 → 生成带执行波次的回填计划（快照持久化）</span>
+</header>
+<nav>
+  <button data-tab="tasks" class="active">任务与依赖</button>
+  <button data-tab="records">运行记录</button>
+  <button data-tab="generate">生成计划</button>
+  <button data-tab="plans">计划列表</button>
+</nav>
+<main>
+  <div id="msg" class="msg"></div>
+
+  <!-- 任务与依赖 -->
+  <section id="tab-tasks" class="tab active">
+    <div class="grid2">
+      <div class="panel">
+        <h2>任务（目标表）</h2>
+        <div class="form-row" style="margin-bottom:12px">
+          <input id="t-name" placeholder="任务名，如 dws_order_daily" style="width:220px">
+          <select id="t-gran"><option value="daily">日分区</option><option value="hourly">小时分区</option></select>
+          <input id="t-desc" placeholder="描述" style="width:140px">
+          <button onclick="addTask()">新增任务</button>
+        </div>
+        <table>
+          <thead><tr><th>任务</th><th>粒度</th><th>配置版本</th><th>描述</th><th></th></tr></thead>
+          <tbody id="task-rows"></tbody>
+        </table>
+        <p class="hint">修改粒度、增删依赖会使该任务配置版本 +1，旧版本的成功记录将变为「版本过期」。</p>
+      </div>
+      <div class="panel">
+        <h2>任务依赖（下游 ← 上游，跨日偏移）</h2>
+        <div class="form-row" style="margin-bottom:12px">
+          <label>下游 <select id="d-down"></select></label>
+          <label>上游 <select id="d-up"></select></label>
+          <label>偏移 <input id="d-off" type="number" min="0" max="365" value="0" style="width:64px"> 天</label>
+          <button onclick="addDep()">新增依赖</button>
+        </div>
+        <table>
+          <thead><tr><th>下游任务</th><th>上游任务</th><th>跨日偏移</th><th></th></tr></thead>
+          <tbody id="dep-rows"></tbody>
+        </table>
+        <p class="hint">偏移 1 表示下游取数日期 = 业务日期 − 1 天；小时上游对日下游展开为全天 24 个小时分区。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 运行记录 -->
+  <section id="tab-records" class="tab">
+    <div class="panel">
+      <h2>录入运行记录（带配置版本）</h2>
+      <div class="form-row" style="margin-bottom:12px">
+        <select id="r-task"></select>
+        <input id="r-part" placeholder="分区 2026-11-13 或 2026-11-13T08" style="width:210px">
+        <select id="r-status"><option value="success">success</option><option value="failed">failed</option></select>
+        <label>版本 <input id="r-ver" type="number" min="1" value="1" style="width:64px"></label>
+        <button onclick="addRecord()">录入</button>
+      </div>
+      <table>
+        <thead><tr><th>任务</th><th>分区</th><th>状态</th><th>记录版本</th><th>当前版本</th><th>完成时间</th><th></th></tr></thead>
+        <tbody id="record-rows"></tbody>
+      </table>
+      <p class="hint">记录版本 &lt; 当前版本 → 该分区前置「版本过期」；记录版本 &gt; 当前版本或分区格式与粒度不符 → 生成计划时被拒绝。</p>
+    </div>
+  </section>
+
+  <!-- 生成计划 -->
+  <section id="tab-generate" class="tab">
+    <div class="panel">
+      <h2>生成回填计划</h2>
+      <div class="form-row">
+        <label>目标任务 <select id="p-target"></select></label>
+        <label>业务日期 <input id="p-date" type="date" value="2026-11-13"></label>
+        <button onclick="generatePlan()">生成计划</button>
+      </div>
+      <p class="hint">小时级目标任务将覆盖该业务日全部 24 个小时分区。依赖成环或记录与当前配置不一致时拒绝生成（留痕于计划列表）。</p>
+    </div>
+    <div id="plan-result"></div>
+  </section>
+
+  <!-- 计划列表 -->
+  <section id="tab-plans" class="tab">
+    <div class="panel">
+      <h2>历史计划（生成时配置快照，重启后仍可查看）</h2>
+      <table>
+        <thead><tr><th>ID</th><th>生成时间</th><th>目标任务</th><th>业务日期</th><th>状态</th><th>摘要</th><th></th></tr></thead>
+        <tbody id="plan-rows"></tbody>
+      </table>
+    </div>
+    <div id="plan-detail"></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const STATUS_CN = {ok:'已就绪', missing:'缺失', failed:'失败', stale:'版本过期'};
+let state = {tasks: [], dependencies: [], records: []};
+
+function showMsg(text, isErr) {
+  const m = $('#msg');
+  m.textContent = text;
+  m.className = 'msg ' + (isErr ? 'err' : 'okm');
+  clearTimeout(m._t);
+  m._t = setTimeout(() => m.className = 'msg', 6000);
+}
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let j = null;
+    try { j = await r.json(); } catch {}
+    const detail = j && j.detail;
+    const text = typeof detail === 'string' ? detail
+      : (detail && detail.reason) || JSON.stringify(detail || r.statusText);
+    const err = new Error(text);
+    err.status = r.status; err.body = text; err.payload = detail;
+    throw err;
+  }
+  return r.status === 204 ? null : r.json();
+}
+const post = (p, body) => api(p, {method: 'POST',
+  headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+const del = p => api(p, {method: 'DELETE'});
+
+async function refresh() {
+  state = await api('/api/state');
+  renderTasks(); renderDeps(); renderRecords(); fillSelects(); loadPlans();
+}
+
+/* ---------- 任务与依赖 ---------- */
+function renderTasks() {
+  $('#task-rows').innerHTML = state.tasks.map(t => `<tr>
+    <td><code>${t.name}</code></td>
+    <td>${t.granularity === 'daily' ? '日' : '小时'}</td>
+    <td><span class="tag ver">v${t.config_version}</span></td>
+    <td>${t.description || ''}</td>
+    <td><button class="ghost" onclick="bumpGran(${t.id},'${t.granularity}')">切换粒度</button>
+        <button class="ghost" onclick="delTask(${t.id})">删除</button></td>
+  </tr>`).join('');
+}
+function renderDeps() {
+  $('#dep-rows').innerHTML = state.dependencies.map(d => `<tr>
+    <td><code>${d.downstream_name}</code></td>
+    <td><code>${d.upstream_name}</code></td>
+    <td>${d.offset_days} 天</td>
+    <td><button class="ghost" onclick="delDep(${d.id})">删除</button></td>
+  </tr>`).join('');
+}
+function fillSelects() {
+  const opts = state.tasks.map(t =>
+    `<option value="${t.id}">${t.name}（${t.granularity === 'daily' ? '日' : '小时'}, v${t.config_version}）</option>`).join('');
+  ['#d-down', '#d-up', '#r-task', '#p-target'].forEach(s => { $(s).innerHTML = opts; });
+}
+async function addTask() {
+  try {
+    await post('/api/tasks', {name: $('#t-name').value.trim(),
+      granularity: $('#t-gran').value, description: $('#t-desc').value.trim()});
+    $('#t-name').value = ''; $('#t-desc').value = '';
+    showMsg('任务已创建'); refresh();
+  } catch (e) { showMsg(e.body, true); }
+}
+async function bumpGran(id, cur) {
+  try {
+    await api(`/api/tasks/${id}`, {method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({granularity: cur === 'daily' ? 'hourly' : 'daily'})});
+    showMsg('粒度已切换，配置版本 +1'); refresh();
+  } catch (e) { showMsg(e.body, true); }
+}
+async function delTask(id) {
+  if (!confirm('删除任务将级联删除其依赖与运行记录，确认？')) return;
+  try { await del(`/api/tasks/${id}`); showMsg('已删除'); refresh(); }
+  catch (e) { showMsg(e.body, true); }
+}
+async function addDep() {
+  try {
+    await post('/api/dependencies', {
+      downstream_id: +$('#d-down').value, upstream_id: +$('#d-up').value,
+      offset_days: +$('#d-off').value || 0});
+    showMsg('依赖已创建，下游任务配置版本 +1'); refresh();
+  } catch (e) { showMsg(e.body, true); }
+}
+async function delDep(id) {
+  try { await del(`/api/dependencies/${id}`); showMsg('依赖已删除，下游配置版本 +1'); refresh(); }
+  catch (e) { showMsg(e.body, true); }
+}
+
+/* ---------- 运行记录 ---------- */
+function renderRecords() {
+  $('#record-rows').innerHTML = state.records.map(r => {
+    const staleTag = r.config_version < r.current_version
+      ? ' <span class="tag stale">过期</span>' : '';
+    const badTag = r.config_version > r.current_version
+      ? ' <span class="tag failed">不一致</span>' : '';
+    return `<tr>
+      <td><code>${r.task_name}</code></td><td>${r.partition}</td>
+      <td><span class="tag ${r.status === 'success' ? 'ok' : 'failed'}">${r.status}</span></td>
+      <td>v${r.config_version}${staleTag}${badTag}</td><td>v${r.current_version}</td>
+      <td>${r.finished_at}</td>
+      <td><button class="ghost" onclick="delRecord(${r.id})">删除</button></td>
+    </tr>`;
+  }).join('');
+}
+async function addRecord() {
+  try {
+    await post('/api/records', {task_id: +$('#r-task').value,
+      partition: $('#r-part').value.trim(), status: $('#r-status').value,
+      config_version: +$('#r-ver').value || 1});
+    $('#r-part').value = '';
+    showMsg('记录已录入'); refresh();
+  } catch (e) { showMsg(e.body, true); }
+}
+async function delRecord(id) {
+  try { await del(`/api/records/${id}`); showMsg('记录已删除'); refresh(); }
+  catch (e) { showMsg(e.body, true); }
+}
+
+/* ---------- 计划 ---------- */
+async function generatePlan() {
+  const box = $('#plan-result');
+  box.innerHTML = '';
+  try {
+    const plan = await post('/api/plans', {
+      target_task_id: +$('#p-target').value, biz_date: $('#p-date').value});
+    box.innerHTML = renderPlan(plan);
+    showMsg(`计划 #${plan.id} 已生成并保存`);
+    loadPlans();
+  } catch (e) {
+    const reason = (e.payload && e.payload.reason) || e.body;
+    box.innerHTML = `<div class="panel"><h2>生成被拒绝</h2><p>${reason}</p>
+      <p class="hint">该拒绝记录已留痕，可在「计划列表」中查看。</p></div>`;
+    showMsg(reason, true);
+    loadPlans();
+  }
+}
+async function loadPlans() {
+  try {
+    const plans = await api('/api/plans');
+    $('#plan-rows').innerHTML = plans.map(p => {
+      const s = p.summary_json ? JSON.parse(p.summary_json) : {};
+      const sum = p.status === 'generated'
+        ? `回填 ${s.backfill ?? 0} / 跳过 ${s.skip ?? 0} / ${s.waves ?? 0} 个波次`
+        : `<span class="hint">${p.reject_reason.slice(0, 60)}</span>`;
+      return `<tr class="plan-row" onclick="showPlan(${p.id})">
+        <td>#${p.id}</td><td>${p.created_at}</td>
+        <td><code>${p.target_name}</code></td><td>${p.biz_date}</td>
+        <td><span class="tag ${p.status === 'generated' ? 'ok' : 'failed'}">${
+          p.status === 'generated' ? '已生成' : '已拒绝'}</span></td>
+        <td>${sum}</td>
+        <td><button class="ghost" onclick="event.stopPropagation();delPlan(${p.id})">删除</button></td>
+      </tr>`;
+    }).join('');
+  } catch (e) { /* 列表失败不阻塞 */ }
+}
+async function showPlan(id) {
+  const plan = await api(`/api/plans/${id}`);
+  $('#plan-detail').innerHTML = renderPlan(plan);
+}
+async function delPlan(id) {
+  try { await del(`/api/plans/${id}`); $('#plan-detail').innerHTML = ''; loadPlans(); }
+  catch (e) { showMsg(e.body, true); }
+}
+function chip(it) {
+  const deps = it.depends_on && it.depends_on.length
+    ? `<span class="deps">← ${it.depends_on.join('，')}</span>` : '';
+  return `<span class="chip ${it.status}">${it.task_name} <b>${it.partition}</b>
+    <span class="st">${STATUS_CN[it.status]}</span>${deps}</span>`;
+}
+function renderPlan(plan) {
+  if (plan.status === 'rejected') {
+    return `<div class="panel"><h2>计划 #${plan.id}（已拒绝）${plan.target_name
+      } @ ${plan.biz_date}</h2><p>${plan.reject_reason}</p></div>`;
+  }
+  const s = plan.summary || {};
+  const snapTasks = (plan.snapshot.tasks || []).map(t =>
+    `<span class="tag ver">${t.name} v${t.config_version}</span>`).join(' ');
+  const backfill = plan.items.filter(i => i.action === 'backfill');
+  const skipped = plan.items.filter(i => i.action === 'skip');
+  const waves = {};
+  backfill.forEach(i => (waves[i.wave] = waves[i.wave] || []).push(i));
+  const waveHtml = Object.keys(waves).sort((a, b) => a - b).map(w =>
+    `<div class="wave"><h3>第 ${w} 波（${waves[w].length} 个分区，波内可并行）</h3>${
+      waves[w].map(chip).join('')}</div>`).join('');
+  return `<div class="panel">
+    <h2>计划 #${plan.id}：${plan.target_name} @ ${plan.biz_date}
+      <span class="hint">（生成于 ${plan.created_at}）</span></h2>
+    <p>待回填 <b>${s.backfill}</b> 个分区 / 已就绪跳过 <b>${s.skip}</b> 个 /
+       共 <b>${s.waves}</b> 个执行波次；
+       缺失 ${s.by_status.missing} · 失败 ${s.by_status.failed} · 版本过期 ${s.by_status.stale}</p>
+    <p class="hint">配置快照：${snapTasks}</p>
+    ${waveHtml || '<p class="hint">所有前置均已就绪，无需回填。</p>'}
+    ${skipped.length ? `<div class="wave"><h3>已就绪（跳过，不再向上展开）</h3>${
+      skipped.map(chip).join('')}</div>` : ''}
+  </div>`;
+}
+
+/* ---------- 页签 ---------- */
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  $('#tab-' + b.dataset.tab).classList.add('active');
+  if (b.dataset.tab === 'plans') loadPlans();
+});
+
+refresh();
+</script>
+</body>
+</html>

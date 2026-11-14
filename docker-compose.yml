@@ -1,0 +1,14 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DB_PATH: /data/app.db
+      SEED_IF_EMPTY: "1"   # 首次启动自动写入示例数据；置 0 关闭
+    volumes:
+      - dw_data:/data      # SQLite 持久化：刷新、重启后计划仍可查看
+    restart: unless-stopped
+
+volumes:
+  dw_data:
